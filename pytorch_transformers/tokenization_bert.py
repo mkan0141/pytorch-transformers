@@ -21,11 +21,12 @@ import logging
 import os
 import unicodedata
 from io import open
-
 from .tokenization_utils import PreTrainedTokenizer
 
-logger = logging.getLogger(__name__)
+from pyknp import Juman
+jumanpp = Juman()
 
+logger = logging.getLogger(__name__)
 VOCAB_FILES_NAMES = {'vocab_file': 'vocab.txt'}
 
 PRETRAINED_VOCAB_FILES_MAP = {
@@ -63,23 +64,6 @@ PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES = {
     'bert-base-cased-finetuned-mrpc': 512,
 }
 
-PRETRAINED_INIT_CONFIGURATION = {
-    'bert-base-uncased': {'do_lower_case': True},
-    'bert-large-uncased': {'do_lower_case': True},
-    'bert-base-cased': {'do_lower_case': False},
-    'bert-large-cased': {'do_lower_case': False},
-    'bert-base-multilingual-uncased': {'do_lower_case': True},
-    'bert-base-multilingual-cased': {'do_lower_case': False},
-    'bert-base-chinese': {'do_lower_case': False},
-    'bert-base-german-cased': {'do_lower_case': False},
-    'bert-large-uncased-whole-word-masking': {'do_lower_case': True},
-    'bert-large-cased-whole-word-masking': {'do_lower_case': False},
-    'bert-large-uncased-whole-word-masking-finetuned-squad': {'do_lower_case': True},
-    'bert-large-cased-whole-word-masking-finetuned-squad': {'do_lower_case': False},
-    'bert-base-cased-finetuned-mrpc': {'do_lower_case': False},
-}
-
-
 def load_vocab(vocab_file):
     """Loads a vocabulary file into a dictionary."""
     vocab = collections.OrderedDict()
@@ -99,6 +83,13 @@ def whitespace_tokenize(text):
     tokens = text.split()
     return tokens
 
+def juman_tokenize(text):
+    text = text.strip()
+    if not text:
+        return []
+    result = jumanpp.analysis(text)
+    tokens = [mrph.midasi for mrph in result.mrph_list()]
+    return tokens
 
 class BertTokenizer(PreTrainedTokenizer):
     r"""
@@ -117,7 +108,6 @@ class BertTokenizer(PreTrainedTokenizer):
 
     vocab_files_names = VOCAB_FILES_NAMES
     pretrained_vocab_files_map = PRETRAINED_VOCAB_FILES_MAP
-    pretrained_init_configuration = PRETRAINED_INIT_CONFIGURATION
     max_model_input_sizes = PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES
 
     def __init__(self, vocab_file, do_lower_case=True, do_basic_tokenize=True, never_split=None,
@@ -143,9 +133,6 @@ class BertTokenizer(PreTrainedTokenizer):
         super(BertTokenizer, self).__init__(unk_token=unk_token, sep_token=sep_token,
                                             pad_token=pad_token, cls_token=cls_token,
                                             mask_token=mask_token, **kwargs)
-        self.max_len_single_sentence = self.max_len - 2  # take into account special tokens
-        self.max_len_sentences_pair = self.max_len - 3  # take into account special tokens
-
         if not os.path.isfile(vocab_file):
             raise ValueError(
                 "Can't find a vocabulary file at path '{}'. To load the vocabulary from a Google pretrained "
@@ -166,12 +153,12 @@ class BertTokenizer(PreTrainedTokenizer):
 
     def _tokenize(self, text):
         split_tokens = []
-        if self.do_basic_tokenize:
-            for token in self.basic_tokenizer.tokenize(text, never_split=self.all_special_tokens):
-                for sub_token in self.wordpiece_tokenizer.tokenize(token):
-                    split_tokens.append(sub_token)
-        else:
-            split_tokens = self.wordpiece_tokenizer.tokenize(text)
+        #if self.do_basic_tokenize:
+        #    for token in self.basic_tokenizer.tokenize(text, never_split=self.all_special_tokens):
+        #        for sub_token in self.wordpiece_tokenizer.tokenize(token):
+        #            split_tokens.append(sub_token)
+        #else:
+        split_tokens = self.wordpiece_tokenizer.tokenize(text)
         return split_tokens
 
     def _convert_token_to_id(self, token):
@@ -192,15 +179,15 @@ class BertTokenizer(PreTrainedTokenizer):
         Adds special tokens to the a sequence for sequence classification tasks.
         A BERT sequence has the following format: [CLS] X [SEP]
         """
-        return [self.cls_token_id] + token_ids + [self.sep_token_id]
+        return [self._convert_token_to_id(self.cls_token)] + token_ids + [self._convert_token_to_id(self.sep_token)]
 
     def add_special_tokens_sentences_pair(self, token_ids_0, token_ids_1):
         """
         Adds special tokens to a sequence pair for sequence classification tasks.
         A BERT sequence pair has the following format: [CLS] A [SEP] B [SEP]
         """
-        sep = [self.sep_token_id]
-        cls = [self.cls_token_id]
+        sep = [self._convert_token_to_id(self.sep_token)]
+        cls = [self._convert_token_to_id(self.cls_token)]
         return cls + token_ids_0 + sep + token_ids_1 + sep
 
     def save_vocabulary(self, vocab_path):
@@ -208,8 +195,6 @@ class BertTokenizer(PreTrainedTokenizer):
         index = 0
         if os.path.isdir(vocab_path):
             vocab_file = os.path.join(vocab_path, VOCAB_FILES_NAMES['vocab_file'])
-        else:
-            vocab_file = vocab_path
         with open(vocab_file, "w", encoding="utf-8") as writer:
             for token, token_index in sorted(self.vocab.items(), key=lambda kv: kv[1]):
                 if index != token_index:
@@ -219,6 +204,24 @@ class BertTokenizer(PreTrainedTokenizer):
                 writer.write(token + u'\n')
                 index += 1
         return (vocab_file,)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *inputs, **kwargs):
+        """ Instantiate a BertTokenizer from pre-trained vocabulary files.
+        """
+        if pretrained_model_name_or_path in PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES:
+            if '-cased' in pretrained_model_name_or_path and kwargs.get('do_lower_case', True):
+                logger.warning("The pre-trained model you are loading is a cased model but you have not set "
+                               "`do_lower_case` to False. We are setting `do_lower_case=False` for you but "
+                               "you may want to check this behavior.")
+                kwargs['do_lower_case'] = False
+            elif '-cased' not in pretrained_model_name_or_path and not kwargs.get('do_lower_case', True):
+                logger.warning("The pre-trained model you are loading is an uncased model but you have set "
+                               "`do_lower_case` to False. We are setting `do_lower_case=True` for you "
+                               "but you may want to check this behavior.")
+                kwargs['do_lower_case'] = True
+
+        return super(BertTokenizer, cls)._from_pretrained(pretrained_model_name_or_path, *inputs, **kwargs)
 
 
 class BasicTokenizer(object):
@@ -382,9 +385,10 @@ class WordpieceTokenizer(object):
         Returns:
           A list of wordpiece tokens.
         """
-
+        if True:
+            return juman_tokenize(text)
         output_tokens = []
-        for token in whitespace_tokenize(text):
+        for token in juman_tokenize(text):
             chars = list(token)
             if len(chars) > self.max_input_chars_per_word:
                 output_tokens.append(self.unk_token)
